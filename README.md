@@ -83,37 +83,32 @@ By storing the timestamps for actions including renewals, reminders, and expirat
 
 ## System Flow
 
-```txt
-User
-  ↓
-Selects Plan
-  ↓
-Laravel API creates Stripe Checkout Session
-  ↓
-Payment completed through Stripe
-  ↓
-Stripe sends verified webhook
-  ↓
-Subscription activated
-  ↓
-Scheduler manages reminders + renewals
+```mermaid
+graph TD
+    A[User Selects Plan] --> B[Laravel API Creates Stripe Checkout]
+    B --> C[Payment Completed on Stripe]
+    C --> D[Stripe Sends Verified Webhook]
+    D --> E[Subscription Activated via Backend]
+    E --> F[Scheduler Manages Reminders + Renewals]
 ```
+
 
 Billing flow is centred around webhook verification instead of frontend confirmation.
 
 The backend creates the checkout session, and the subscription only activates after receiving and verifying a valid webhook from Stripe.
 
-```txt
-Pending
-   ↓
-Active
-   ↓
-Renewing
- ↙       ↘
-Success   Failure
-   ↓         ↓
-Extended   Expire
+```mermaid
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Active
+    Active --> Renewing
+    State_Renewing_Check --> Success
+    State_Renewing_Check --> Failure
+    Success --> Extended
+    Failure --> Expired
+    Extended --> Renewing
 ```
+
 
 Subscriptions are modeled around complete lifecycles. This helps with tracking renewals and handling late webhooks.
 
@@ -142,7 +137,7 @@ SubEngine is built as an API-first Laravel backend. Key highlights include:
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com
+   git clone https://github.com/EliasAhmedDev/SubEngine.git
    cd SubEngine
    ```
 
