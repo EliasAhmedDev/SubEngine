@@ -1,58 +1,193 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# SubEngine
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A subscription billing engine created using Laravel 13 that focuses on webhook-driven payments and toggleable recurring billing.
 
-## About Laravel
+![Laravel](https://img.shields.io/badge/Laravel-13-red)
+![PHP](https://img.shields.io/badge/PHP-8.3-blue)
+![Stripe](https://img.shields.io/badge/Stripe-Checkout-635BFF)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## The Problem
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+Subscription billing looks easy until you deal with webhook idempotency, failed charges, recurring billing, and subscription state transitions. 
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+A real-world billing system cannot assume a payment succeeded instantly. Payments can have late completions, renewals may fail, and webhook payments can arrive after a user has changed their plans.
 
-## Learning Laravel
+SubEngine was designed to handle these processes more realistically. 
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+## Why This Project Exists
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+Instead of building a feature-heavy SaaS platform, I focused on the core challenges of subscription integration.
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+Subscription systems are known for being complex because:
+- **Asynchronous Payments**: Payments do not always process instantly.
+- **Webhook Dependency**: Network latency can mean a delayed arrival of event notifications.
+- **Unusual Lifecycles**: Users can come up with unpredictable scenarios.
 
-## Agentic Development
+In this project I focused on handling these types of situations safely.
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+## System Architecture & Key Decisions
+
+### Webhook-Driven Activation
+
+Subscriptions are never activated based on client-side success messages or frontend redirects. Instead, SubEngine treats Stripe webhooks as the final confirmation of a successful payment. 
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+# Simulating the payment payload
+curl --request POST \
+  --url http://127.0.0.1:8000/api/subscription \
+  --header 'Accept: application/json' \
+  --header 'Content-Type: application/json' \
+  --header 'Authorization: Bearer $TOKEN' \
+  --data '{
+  "plan_slug": "monthly",
+  "auto_renew": true
+}'
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+After successfully paying using the checkout URL, the webhooks are received from Stripe to confirm the payment to the backend: 
 
-## Contributing
+```text
+# Stripe CLI Listener Logs
+--> customer.created [evt_1TbWpkQt5n8J4PH0N2gzZbty]
+<-- [200] POST http://localhost:8000/api/webhooks/stripe
+--> charge.succeeded [evt_3TbWq7Qt5n8J4PH01RieCjQp]
+<-- [200] POST http://localhost:8000/api/webhooks/stripe
+--> payment_intent.succeeded [evt_3TbWq7Qt5n8J4PH01RM6RNCB]
+<-- [200] POST http://localhost:8000/api/webhooks/stripe
+--> checkout.session.completed [evt_1TbWq9Qt5n8J4PH0loylSS1H]
+<-- [200] POST http://localhost:8000/api/webhooks/stripe
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+Subscriptions are activated only after the backend receives and verifies a valid webhook notification from Stripe. This keeps the payment state consistent.
 
-## Code of Conduct
+### Payment History Design
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+Payment are treated as historical data and are never deleted.
 
-## Security Vulnerabilities
+The system saves all payment attempts, including failed and pending payments. This gives better auditability and debugging. 
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+### Subscription Lifecycle Model
 
-## License
+SubEngine gives subscriptions a complete life cycle rather than a simple active/inactive state. 
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+All subscriptions go through clearly defined states such as pending, active, or expired. This allows the system to replicate real-world behavior. 
+
+### Strategic Renewal Timing (super important!) 
+
+Renewals are attempted before the subscription actually expires. If the renewal is successful, it would extend and update the next renewal date. If the renewal fails, the subscription's auto-renew would be toggled off and the subscription would automatically expire once the expiration date hits. An email would also be sent to the user notifying them about their failed renewal.
+
+### Scheduler & Idempotency Design
+
+By storing the timestamps for actions including renewals, reminders, and expiration handling, scheduler jobs are designed to be idempotent, meaning that they can run multiple times without causing duplicate actions. This ensures that the scheduler can safely run repeatedly without causing repeated billing actions or duplicate emails.
+
+## System Flow
+
+```txt
+User
+  ↓
+Selects Plan
+  ↓
+Laravel API creates Stripe Checkout Session
+  ↓
+Payment completed through Stripe
+  ↓
+Stripe sends verified webhook
+  ↓
+Subscription activated
+  ↓
+Scheduler manages reminders + renewals
+```
+
+Billing flow is centred around webhook verification instead of frontend confirmation.
+
+The backend creates the checkout session, and the subscription only activates after receiving and verifying a valid webhook from Stripe.
+
+```txt
+Pending
+   ↓
+Active
+   ↓
+Renewing
+ ↙       ↘
+Success   Failure
+   ↓         ↓
+Extended   Expire
+```
+
+Subscriptions are modeled around complete lifecycles. This helps with tracking renewals and handling late webhooks.
+
+```txt
+renewal_due_at  → renewal attempt begins
+ends_at         → subscription access ends
+```
+
+Renewals are attempted before the actual expiration date. Separating the renewal date from the subscription expiration date allows the system to cleanly attempt a renewal before expiration, preventing a user from getting extra unpaid hours.
+
+## Technical Highlights
+
+SubEngine is built as an API-first Laravel backend. Key highlights include: 
+- Laravel 13
+- PHP 8.3
+- MySQL
+- Laravel Sanctum authentication
+- Stripe Checkout integration
+- Stripe webhook verification
+- Queued notifications
+- Laravel Scheduler
+- Authorization policies
+- Payment history preservation
+
+## Installation and Setup
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com
+   cd SubEngine
+   ```
+
+2. **Install dependencies**
+   ```bash
+   composer install
+   npm install && npm run build
+   ```
+
+3. **Configure environment**
+   ```bash
+   cp .env.example .env
+   php artisan key:generate
+   ```
+   *Note: Open `.env` and set your database credentials and Stripe API keys (`STRIPE_SECRET`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`).*
+
+4. **Migrate database**
+   ```bash
+   php artisan migrate --seed
+   ```
+
+5. **Run queue + scheduler**
+   ```bash
+   # In a separate terminal window to handle async webhooks
+   php artisan queue:work
+   
+   # In another window to run the idempotency tasks
+   php artisan schedule:work
+   ```
+
+6. **Start Stripe CLI forwarding**
+   ```bash
+   # In a separate terminal window to route live webhook events
+   stripe listen --forward-to localhost:8000/api/webhooks/stripe
+   ```
+
+7. **Start server**
+   ```bash
+   php artisan serve
+   ```
+
+## Conclusion
+
+I intentionally built SubEngine to be compact. Instead of a feature-heavy SaaS, the goal was to strictly focus on the most important backend logic that often breaks in real-world applications. 
+
+This project was less about subscription management itself, and more about engineering a resilient backend architecture that remains solid under chaotic conditions.
+
+
